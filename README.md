@@ -1,33 +1,52 @@
-# daisy-extract
-This Python script will take a DAISY talking book, scan its metadata, and then extract all of the audio content into a friendlier structure.
+# ReaDaisy
 
-- By default the book will be placed in the directory `<output>\<author>\<title>` (where `<output>` is the output path specified on the command line)
-- The MP3 files will be numbered and renamed to reflect their true contents
-- A playlist will be created to play the entire book
+ReaDaisy is a Python tool for processing DAISY (Digital Accessible Information System) books.
+It extracts audio content and metadata from DAISY books, reorganizes them into a more accessible structure, and creates Reaper project files for easy audio editing.
+Note that the current project was inspired by [daisy-extract](https://github.com/jscholes/daisy-extract).
+It is also mainly used to reaperize Bible Daisy books.
+Therefore all headings at level 1 are treated as separate books and therefore extracted into separate folders and projects.
 
-Note: This script has only been tested with books which follow the DAISY 2.02 standard, designated as "Full audio with NCC only".
+## Features
 
-## How do I use it?
-When I get around to it, I'll package the script so it will be installable with pip and runnable from anywhere.  But for now, to get set up:
+- Extracts audio files and metadata from DAISY 2.02 books
+- Organizes content into a hierarchical structure (books, chapters, subheadings)
+- Renames audio files based on their content and position in the book
+- Creates Reaper project files (.RPP) with proper track layout and markers
+- Supports batch processing of multiple books
 
-Install Python and pip.  I've only tested it with Python 3.4 so far.
+## Requirements
 
-In a directory of your choice, run:
+- Python 3.11 or higher
+- beautifulsoup4 with lxml
+- reathon
 
-```
-git clone https://github.com/jscholes/daisy-extract
-cd daisy-extract
-pip install -r requirements.txt
-```
+## Installation
 
-Alternatively you can download the contents of the repository as a ZIP file, extract it somewhere, and execute the two last commands above without cloning from Git.
+1. Clone the repository:
+1. Install the required packages:
 
-Run the script by typing:
+## Usage
 
-```
-python extract.py
-```
-    
-which will show you the possible command line options.
+Run the script with the following command:
+`python readaisy.py -i <input_directory> -o <output_directory>`
 
-Feel free to submit pull requests or file bugs here on GitHub.
+Where:
+
+- `<input_directory>` is the path to the directory containing DAISY books
+- `<output_directory>` is the path where you want the processed files to be saved
+
+## Output
+
+For each processed book, ReaDaisy will create:
+
+- A directory structure organizing the book's content
+- Renamed and numbered audio files
+- A Reaper project file (.RPP) for audio editing
+
+## License
+
+This project is licensed under the GNU General Public License v3.0. See the LICENSE file for details.
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
