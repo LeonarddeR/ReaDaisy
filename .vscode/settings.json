@@ -1,0 +1,13 @@
+{
+    "editor.accessibilitySupport": "on",
+    "ruff.enable": true,
+    "files.insertFinalNewline": true,
+    "files.trimFinalNewlines": true,
+    "editor.insertSpaces": false,
+    "autoDocstring.docstringFormat": "sphinx",
+    "[python]": {
+        "editor.defaultFormatter": "charliermarsh.ruff"
+    },
+    "python.analysis.autoImportCompletions": true,
+    "python.analysis.importFormat": "relative"
+}

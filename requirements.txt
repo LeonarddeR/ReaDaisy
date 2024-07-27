@@ -1,2 +1,4 @@
-beautifulsoup4==4.4.1
-natsort==5.0.0
+beautifulsoup4
+lxml
+ruff
+reathon
