@@ -21,13 +21,7 @@ NCC_FILENAME = "NCC.HTML"
 
 @dataclass
 class Smil:
-    """
-    Represents a SMIL document in a DAISY book.
-
-    The `Smil` class encapsulates information about a SMIL document,
-    including its level in the document hierarchy, title, and file name.
-    It may also have a list of child `Smil` objects representing nested SMIL documents.
-    """
+    """Represents a SMIL document in a DAISY book."""
 
     level: int
     title: str
@@ -37,14 +31,7 @@ class Smil:
 
 @dataclass
 class Audio:
-    """
-    Represents an audio file with a start and end time.
-
-    The `Audio` class encapsulates information about an audio file,
-    including its identifier, file name, start time, and end time.
-    This information is typically used in the context of a DAISY book,
-    where multiple audio files are synchronized with a SMIL document.
-    """
+    """Represents an audio file with a start and end time."""
 
     identifier: str
     file_name: str
@@ -53,13 +40,17 @@ class Audio:
 
 
 def main():
+    """Main function to process DAISY books."""
     cli_args = parse_command_line()
     input_directory = os.path.abspath(cli_args.input_directory)
     output_directory = os.path.abspath(cli_args.output_directory)
+
     if not os.path.exists(input_directory) or not os.path.isdir(input_directory):
         exit_with_error(f"{input_directory} does not exist or is not a directory")
+
     ncc_files = glob(os.path.join(input_directory, "**", NCC_FILENAME), recursive=True)
     book_start_number = 1
+
     for ncc_file in ncc_files:
         ncc_dir = os.path.dirname(ncc_file)
         smils = get_smils(ncc_file)
@@ -67,7 +58,10 @@ def main():
         book_start_number += len(smils)
 
 
-def copy_audio_file(input_directory, book_dir, current_file_name, new_filename):
+def copy_audio_file(
+    input_directory: str, book_dir: str, current_file_name: str, new_filename: str
+):
+    """Copy audio file from input directory to book directory."""
     source_path = os.path.join(input_directory, current_file_name)
     destination_path = os.path.join(book_dir, new_filename)
     shutil.copy2(source_path, destination_path)
@@ -79,6 +73,7 @@ def process_books(
     output_directory: str,
     book_start_number: int,
 ):
+    """Process each book in the DAISY structure."""
     for index, book in enumerate(smils, start=book_start_number):
         book_dir = os.path.join(output_directory, f"{index:02d} - {book.title}")
         os.makedirs(book_dir, exist_ok=True)
@@ -89,8 +84,9 @@ def process_books(
         book_start = get_start_time(smil_content)
         audio_file_name = audio_files[0].file_name
 
-        new_file_name = f"00 - {book.title}{os.path.splitext(audio_file_name)[1]}"
-        new_file_name = make_safe_filename(new_file_name)
+        new_file_name = make_safe_filename(
+            f"00 - {book.title}{os.path.splitext(audio_file_name)[1]}"
+        )
         copy_audio_file(input_directory, book_dir, audio_file_name, new_file_name)
 
         total_chapters = len(book.children)
@@ -101,33 +97,37 @@ def process_books(
                 chapter, input_directory, book_dir, book_start, chapter_padding
             )
 
-        # Write audio_files to a CSV file for REAPER markers
-        csv_filename = os.path.join(book_dir, f"{index:02d} - {book.title}_markers.csv")
-
-        create_markers_csv(csv_filename, audio_files)
+        create_markers_csv(book_dir, index, book.title, audio_files)
 
 
-def create_markers_csv(csv_filename: str, audio_files: list):
+def create_markers_csv(book_dir: str, index: int, title: str, audio_files: list[Audio]):
+    """Create a CSV file with markers for REAPER."""
+    csv_filename = os.path.join(book_dir, f"{index:02d} - {title}_markers.csv")
     with open(csv_filename, "w", newline="") as csvfile:
         csv_writer = csv.writer(csvfile)
         csv_writer.writerow(["#", "Name", "Start", "End", "Length"])
         for i, audio in enumerate(audio_files, start=1):
-            start = audio.start
-            end = audio.end
-            length = end - start
+            start, end = audio.start, audio.end
             csv_writer.writerow(
                 [
                     f"r{i}",
                     f"{i}{audio.identifier}",
                     start,
                     end,
-                    length,
+                    end - start,
                     "",
                 ]
             )
 
 
-def process_chapter(chapter, input_directory, book_dir, book_start, chapter_padding):
+def process_chapter(
+    chapter: Smil,
+    input_directory: str,
+    book_dir: str,
+    book_start: Decimal,
+    chapter_padding: int,
+) -> list[Audio]:
+    """Process a chapter within a book."""
     smil_path = os.path.join(input_directory, chapter.file_name)
     smil_content = parse_smil_document(smil_path)
     rel_start = get_start_time(smil_content) - book_start
@@ -136,16 +136,12 @@ def process_chapter(chapter, input_directory, book_dir, book_start, chapter_padd
     total_subheadings = len(chapter.children)
     subheading_padding = len(str(total_subheadings))
 
-    new_file_name = (
+    new_file_name = make_safe_filename(
         f"{chapter.title.zfill(chapter_padding)} - "
         f"{str(0).zfill(subheading_padding)}{os.path.splitext(chapter_audio_files[0].file_name)[1]}"
     )
-    new_file_name = make_safe_filename(new_file_name)
     copy_audio_file(
-        input_directory,
-        book_dir,
-        chapter_audio_files[0].file_name,
-        new_file_name,
+        input_directory, book_dir, chapter_audio_files[0].file_name, new_file_name
     )
 
     for subheading_index, subheading in enumerate(chapter.children, start=1):
@@ -164,15 +160,16 @@ def process_chapter(chapter, input_directory, book_dir, book_start, chapter_padd
 
 
 def process_subheading(
-    subheading,
-    input_directory,
-    book_dir,
-    book_start,
-    chapter,
-    subheading_index,
-    chapter_padding,
-    subheading_padding,
-):
+    subheading: Smil,
+    input_directory: str,
+    book_dir: str,
+    book_start: Decimal,
+    chapter: Smil,
+    subheading_index: int,
+    chapter_padding: int,
+    subheading_padding: int,
+) -> list[Audio]:
+    """Process a subheading within a chapter."""
     smil_path = os.path.join(input_directory, subheading.file_name)
     smil_content = parse_smil_document(smil_path)
     rel_start = get_start_time(smil_content) - book_start
@@ -180,12 +177,11 @@ def process_subheading(
         smil_content, rel_start, f"{chapter}_{subheading_index}"
     )
 
-    subheading_new_file_name = (
+    subheading_new_file_name = make_safe_filename(
         f"{chapter.title.zfill(chapter_padding)} - "
         f"{str(subheading_index).zfill(subheading_padding)} - "
         f"{subheading.title}{os.path.splitext(subheading_audio_files[0].file_name)[1]}"
     )
-    subheading_new_file_name = make_safe_filename(subheading_new_file_name)
     copy_audio_file(
         input_directory,
         book_dir,
@@ -196,28 +192,27 @@ def process_subheading(
     return subheading_audio_files
 
 
-def parse_smil_document(smil_path):
+def parse_smil_document(smil_path: str) -> BeautifulSoup:
+    """Parse a SMIL document and return a BeautifulSoup object."""
     with open(smil_path, encoding="utf-8") as f:
         return BeautifulSoup(f, "xml")
 
 
-def get_start_time(smil_content) -> Decimal:
+def get_start_time(smil_content: BeautifulSoup) -> Decimal:
+    """Extract the start time from a SMIL document."""
     meta_tag = smil_content.find("meta", attrs={"name": "ncc:totalElapsedTime"})
-
     if not meta_tag:
         raise RuntimeError("No meta tag found")
+
     time_str = meta_tag["content"]
     parts = time_str.split(":")
-
-    total_seconds = sum(
-        Decimal(part) * (60**i) for i, part in enumerate(reversed(parts))
-    )
-    return total_seconds
+    return sum(Decimal(part) * (60**i) for i, part in enumerate(reversed(parts)))
 
 
 def get_audio_files(
-    smil_content, start_time: Decimal = 0, id_prefix: str = ""
+    smil_content: BeautifulSoup, start_time: Decimal = 0, id_prefix: str = ""
 ) -> list[Audio]:
+    """Extract audio file information from a SMIL document."""
     audio_files = []
     for audio_tag in smil_content.find_all("audio"):
         file_name = audio_tag["src"]
@@ -225,39 +220,28 @@ def get_audio_files(
         end = Decimal(audio_tag["clip-end"].split("=")[1][:-1]) + start_time
         identifier = f"{id_prefix}{int(audio_tag["id"].split("_")[-1], base=16)}"
         audio_files.append(Audio(identifier, file_name, start, end))
-    # Check if all audio files have the same filename
+
     if not all(audio.file_name == file_name for audio in audio_files):
         raise ValueError(f"Not all audio files have the same filename: {file_name}")
     return audio_files
 
 
-def parse_command_line():
-    """
-    Parses the command line arguments for the application.
-
-    This function uses the `argparse` module to define and parse the
-    command line arguments for the application.
-    It expects two required arguments:
-
-    - `--input-directory`: The directory containing the input files.
-    - `--output-directory`: The directory to write the output files to.
-
-    The function returns the parsed arguments as an `argparse.Namespace` object.
-    """
+def parse_command_line() -> argparse.Namespace:
+    """Parse command line arguments."""
     parser = argparse.ArgumentParser()
     parser.add_argument("-i", "--input-directory", nargs="?", required=True)
     parser.add_argument("-o", "--output-directory", nargs="?", required=True)
-
-    args = parser.parse_args()
-    return args
+    return parser.parse_args()
 
 
-def exit_with_error(message):
+def exit_with_error(message: str):
+    """Print an error message and exit the program."""
     print(message)
     sys.exit(1)
 
 
-def get_smils(ncc_path, encoding="utf-8") -> list[Smil]:
+def get_smils(ncc_path: str, encoding: str = "utf-8") -> list[Smil]:
+    """Extract SMIL information from the NCC file."""
     with open(ncc_path, encoding=encoding) as f:
         ncc = BeautifulSoup(f, "xml")
 
@@ -289,13 +273,12 @@ def get_smils(ncc_path, encoding="utf-8") -> list[Smil]:
     return smil_list
 
 
-def make_safe_filename(filename):
-    # strip out any disallowed chars and replace with underscores
+def make_safe_filename(filename: str) -> str:
+    """Create a safe filename by removing or replacing disallowed characters."""
     disallowed_ascii = [chr(i) for i in range(0, 32)]
     disallowed_chars = '<>:"/\\|?*^{}'.format("".join(disallowed_ascii))
     translator = dict((ord(char), "_") for char in disallowed_chars)
-    safe_filename = filename.replace(": ", " - ").translate(translator).rstrip(". ")
-    return safe_filename
+    return filename.replace(": ", " - ").translate(translator).rstrip(". ")
 
 
 if __name__ == "__main__":
