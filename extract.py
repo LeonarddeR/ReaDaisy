@@ -1,206 +1,269 @@
 # daisy-extract
 # Copyright (C) 2016 James Scholes
-# This program is free software, licensed under the terms of the GNU General Public License (version 3 or later).
+# This program is free software, licensed under the terms of the
+# GNU General Public License (version 3 or later).
 # See the file LICENSE for more details.
 
-from collections import namedtuple
 import argparse
-import glob
-import logging
+import csv
 import os
-import platform
 import shutil
 import sys
+from dataclasses import dataclass
+from decimal import Decimal
+from glob import glob
+from typing import Self
 
 from bs4 import BeautifulSoup
-from natsort import natsorted
+
+NCC_FILENAME = "NCC.HTML"
 
 
-__version__ = '0.1'
-is_windows = 'windows' in platform.system().lower()
+@dataclass
+class Smil:
+    """
+    Represents a SMIL document in a DAISY book.
 
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
-log_stream = logging.StreamHandler(sys.stdout)
-log_stream.setFormatter(logging.Formatter('%(levelname)s: %(message)s'))
-logger.addHandler(log_stream)
+    The `Smil` class encapsulates information about a SMIL document,
+    including its level in the document hierarchy, title, and file name.
+    It may also have a list of child `Smil` objects representing nested SMIL documents.
+    """
 
-HTML_PARSER = 'html.parser'
-NCC_FILENAME = 'NCC.HTML'
-MASTER_SMIL_FILENAME = 'MASTER.SMIL'
-SMIL_GLOB = '*.[sS][mM][iI][lL]'
-
-BookMetadata = namedtuple('BookMetadata', ('authors', 'title'))
-
-
-class InvalidDAISYBookError(Exception):
-    pass
+    level: int
+    title: str
+    file_name: str
+    children: list[Self] | None = None
 
 
-class ExtractMetadataError(Exception):
-    pass
+@dataclass
+class Audio:
+    """
+    Represents an audio file with a start and end time.
+
+    The `Audio` class encapsulates information about an audio file,
+    including its identifier, file name, start time, and end time.
+    This information is typically used in the context of a DAISY book,
+    where multiple audio files are synchronized with a SMIL document.
+    """
+
+    identifier: str
+    file_name: str
+    start: Decimal
+    end: Decimal
 
 
 def main():
-    logger.info('daisy-extract version {0}'.format(__version__))
     cli_args = parse_command_line()
-    if cli_args.debug:
-        logger.setLevel(logging.DEBUG)
-
-    encoding = getattr(cli_args, 'encoding', 'utf-8')
-
     input_directory = os.path.abspath(cli_args.input_directory)
     output_directory = os.path.abspath(cli_args.output_directory)
     if not os.path.exists(input_directory) or not os.path.isdir(input_directory):
-        exit_with_error('{0} does not exist or is not a directory'.format(input_directory))
+        exit_with_error(f"{input_directory} does not exist or is not a directory")
+    ncc_files = glob(os.path.join(input_directory, "**", NCC_FILENAME), recursive=True)
+    book_start_number = 1
+    for ncc_file in ncc_files:
+        ncc_dir = os.path.dirname(ncc_file)
+        smils = get_smils(ncc_file)
+        process_books(smils, ncc_dir, output_directory, book_start_number)
+        book_start_number += len(smils)
 
-    try:
-        metadata = create_metadata_object_from_ncc(find_ncc_path(input_directory), encoding=encoding)
-    except InvalidDAISYBookError as e:
-        exit_with_error('The contents of {0} don\'t seem to be a valid DAISY 2.02 book: {1}'.format(input_directory, str(e)))
-    except ExtractMetadataError as e:
-        exit_with_error(str(e))
 
-    output_directory = os.path.join(output_directory, make_safe_filename(metadata.authors), make_safe_filename(metadata.title))
-    logger.info('Extracting content of book: {0} by {1} from {2} to {3}'.format(metadata.title, metadata.authors, input_directory, output_directory))
+def copy_audio_file(input_directory, book_dir, current_file_name, new_filename):
+    source_path = os.path.join(input_directory, current_file_name)
+    destination_path = os.path.join(book_dir, new_filename)
+    shutil.copy2(source_path, destination_path)
 
-    source_audio_files = []
-    destination_audio_files = []
-    for doc in find_smil_documents(input_directory):
-        parsed_doc = parse_smil_document(doc, encoding=encoding)
-        try:
-            section_title = find_document_title(parsed_doc)
-            logger.debug('Found SMIL document: {0}'.format(section_title))
-        except ExtractMetadataError as e:
-            exit_with_error('Could not retrieve metadata from SMIL document ({0}): {1}'.format(file, str(e)))
 
-        section_audio_files = get_audio_filenames_from_smil(parsed_doc)
-        logger.debug('SMIL document spans {0} audio file(s)'.format(len(section_audio_files)))
+def process_books(
+    smils: list[Smil],
+    input_directory: str,
+    output_directory: str,
+    book_start_number: int,
+):
+    for index, book in enumerate(smils, start=book_start_number):
+        book_dir = os.path.join(output_directory, f"{index:02d} - {book.title}")
+        os.makedirs(book_dir, exist_ok=True)
 
-        for audio_file in section_audio_files:
-            source_audio_files.append((section_title, os.path.join(input_directory, audio_file)))
+        smil_path = os.path.join(input_directory, book.file_name)
+        smil_content = parse_smil_document(smil_path)
+        audio_files = get_audio_files(smil_content)
+        book_start = get_start_time(smil_content)
+        audio_file_name = audio_files[0].file_name
 
-    logger.info('Copying {0} audio files'.format(len(source_audio_files)))
-    try:
-        os.makedirs(output_directory)
-        logger.debug('Created directory: {0}'.format(output_directory))
-    except (FileExistsError, PermissionError):
-        pass
+        new_file_name = f"00 - {book.title}{os.path.splitext(audio_file_name)[1]}"
+        new_file_name = make_safe_filename(new_file_name)
+        copy_audio_file(input_directory, book_dir, audio_file_name, new_file_name)
 
-    track_number = 1
-    for section_name, file_path in source_audio_files:
-        destination_filename = '{0:02d} - {1}.{2}'.format(track_number, make_safe_filename(section_name), os.path.splitext(file_path)[-1][1:].lower())
-        destination_path = os.path.join(output_directory, destination_filename)
-        logger.debug('Copying file: {0} to: {1}'.format(file_path, destination_path))
-        if is_windows:
-            destination_path = add_path_prefix(destination_path)
-        shutil.copyfile(file_path, destination_path)
-        destination_audio_files.append(os.path.split(destination_path)[-1])
-        track_number += 1
+        total_chapters = len(book.children)
+        chapter_padding = len(str(total_chapters))
 
-    logger.info('Creating M3U playlist')
-    playlist_filename = '{0}.m3u'.format(make_safe_filename(metadata.title))
-    playlist_path = os.path.join(output_directory, playlist_filename)
-    logger.debug('M3U playlist path: {0}'.format(playlist_path))
-    if is_windows:
-        playlist_path = add_path_prefix(playlist_path)
-    with open(playlist_path, 'w', newline=None) as f:
-        f.write('\n'.join(destination_audio_files))
+        for chapter in book.children:
+            smil_path = os.path.join(input_directory, chapter.file_name)
+            smil_content = parse_smil_document(smil_path)
+            rel_start = get_start_time(smil_content) - book_start
+            chapter_audio_files = get_audio_files(
+                smil_content, rel_start, f"{chapter}_"
+            )
 
-    logger.info('Done!')
+            total_subheadings = len(chapter.children)
+            subheading_padding = len(str(total_subheadings))
+
+            new_file_name = (
+                f"{chapter.title.zfill(chapter_padding)} - "
+                f"{str(0).zfill(subheading_padding)}{os.path.splitext(chapter_audio_files[0].file_name)[1]}"
+            )
+            new_file_name = make_safe_filename(new_file_name)
+            copy_audio_file(
+                input_directory,
+                book_dir,
+                chapter_audio_files[0].file_name,
+                new_file_name,
+            )
+
+            audio_files += chapter_audio_files
+            for subheading_index, subheading in enumerate(chapter.children, start=1):
+                smil_path = os.path.join(input_directory, subheading.file_name)
+                smil_content = parse_smil_document(smil_path)
+                rel_start = get_start_time(smil_content) - book_start
+                subheading_audio_files = get_audio_files(
+                    smil_content, rel_start, f"{chapter}_{subheading_index}"
+                )
+
+                subheading_new_file_name = (
+                    f"{chapter.title.zfill(chapter_padding)} - "
+                    f"{str(subheading_index).zfill(subheading_padding)} - "
+                    f"{subheading.title}{os.path.splitext(subheading_audio_files[0].file_name)[1]}"
+                )
+                subheading_new_file_name = make_safe_filename(subheading_new_file_name)
+                copy_audio_file(
+                    input_directory,
+                    book_dir,
+                    subheading_audio_files[0].file_name,
+                    subheading_new_file_name,
+                )
+
+                audio_files += subheading_audio_files
+        # Write audio_files to a CSV file for REAPER markers
+        csv_filename = os.path.join(book_dir, f"{index:02d} - {book.title}_markers.csv")
+        with open(csv_filename, "w", newline="") as csvfile:
+            csv_writer = csv.writer(csvfile)
+            csv_writer.writerow(["#", "Name", "Start", "End", "Length"])
+            for i, audio in enumerate(audio_files, start=1):
+                start = audio.start
+                end = audio.end
+                length = end - start
+                csv_writer.writerow(
+                    [
+                        f"r{i}",
+                        f"{i}{audio.identifier}",
+                        start,
+                        end,
+                        length,
+                        "",
+                    ]
+                )
+
+
+def parse_smil_document(smil_path):
+    with open(smil_path, encoding="utf-8") as f:
+        return BeautifulSoup(f, "xml")
+
+
+def get_start_time(smil_content) -> Decimal:
+    meta_tag = smil_content.find("meta", attrs={"name": "ncc:totalElapsedTime"})
+
+    if not meta_tag:
+        raise RuntimeError("No meta tag found")
+    time_str = meta_tag["content"]
+    parts = time_str.split(":")
+
+    total_seconds = sum(
+        Decimal(part) * (60**i) for i, part in enumerate(reversed(parts))
+    )
+    return total_seconds
+
+
+def get_audio_files(
+    smil_content, start_time: Decimal = 0, id_prefix: str = ""
+) -> list[Audio]:
+    audio_files = []
+    for audio_tag in smil_content.find_all("audio"):
+        file_name = audio_tag["src"]
+        start = Decimal(audio_tag["clip-begin"].split("=")[1][:-1]) + start_time
+        end = Decimal(audio_tag["clip-end"].split("=")[1][:-1]) + start_time
+        identifier = f"{id_prefix}{int(audio_tag["id"].split("_")[-1], base=16)}"
+        audio_files.append(Audio(identifier, file_name, start, end))
+    # Check if all audio files have the same filename
+    if not all(audio.file_name == file_name for audio in audio_files):
+        raise ValueError(f"Not all audio files have the same filename: {file_name}")
+    return audio_files
 
 
 def parse_command_line():
+    """
+    Parses the command line arguments for the application.
+
+    This function uses the `argparse` module to define and parse the
+    command line arguments for the application.
+    It expects two required arguments:
+
+    - `--input-directory`: The directory containing the input files.
+    - `--output-directory`: The directory to write the output files to.
+
+    The function returns the parsed arguments as an `argparse.Namespace` object.
+    """
     parser = argparse.ArgumentParser()
-    parser.add_argument('-i', '--input-directory', nargs='?', required=True)
-    parser.add_argument('-o', '--output-directory', nargs='?', required=True)
-    parser.add_argument('-e', '--encoding', nargs='?', required=False)
-    parser.add_argument('-d', '--debug', dest='debug', action='store_true', default=False, help='Enable debug logging')
+    parser.add_argument("-i", "--input-directory", nargs="?", required=True)
+    parser.add_argument("-o", "--output-directory", nargs="?", required=True)
+
     args = parser.parse_args()
     return args
 
 
 def exit_with_error(message):
-    logger.error(message)
+    print(message)
     sys.exit(1)
 
 
-def find_ncc_path(directory):
-    filenames = (NCC_FILENAME, NCC_FILENAME.lower())
-    for filename in filenames:
-        path = os.path.join(directory, filename)
-        if os.path.exists(path) and os.path.isfile(path):
-            logger.debug('Found NCC file: {0}'.format(path))
-            return path
+def get_smils(ncc_path, encoding="utf-8") -> list[Smil]:
+    with open(ncc_path, encoding=encoding) as f:
+        ncc = BeautifulSoup(f, "xml")
 
-    raise InvalidDAISYBookError('Could not find NCC file')
+    headings = ncc.find_all(["h1", "h2", "h3"])
+    smil_list = []
+    current_h1 = None
+    current_h2 = None
 
+    for heading in headings:
+        level = int(heading.name[1])
+        title = heading.a.text.strip()
+        path = heading.a["href"].split("#")[0]
 
-def find_smil_documents(directory):
-    documents = list(filter(lambda smil: not smil.upper().endswith(MASTER_SMIL_FILENAME), glob.iglob(os.path.join(directory, SMIL_GLOB))))
-    if documents:
-        logger.debug('Found {0} SMIL documents in directory'.format(len(documents)))
-        return natsorted(documents)
-    else:
-        raise InvalidDAISYBookError('No SMIL documents found')
-
-
-def create_metadata_object_from_ncc(ncc_path, encoding='utf-8'):
-    with open(ncc_path, 'r', encoding=encoding) as f:
-        ncc = BeautifulSoup(f, HTML_PARSER)
-
-    title_tag = ncc.find('meta', attrs={'name': 'dc:title'})
-    if title_tag is None:
-        raise ExtractMetadataError('The title of the DAISY book could not be found')
-    title = title_tag.attrs.get('content')
-    if not title:
-        raise ExtractMetadataError('The title of the DAISY book is blank')
-
-    creator_tags = ncc.find_all('meta', attrs={'name': 'dc:creator'})
-    if not creator_tags:
-        raise ExtractMetadataError('No authors are listed in the DAISY book')
-    authors = ', '.join([tag.attrs.get('content') for tag in creator_tags])
-
-    return BookMetadata(authors, title)
-
-
-def parse_smil_document(path, encoding='utf-8'):
-    logger.debug('Parsing SMIL document: {0}'.format(os.path.split(path)[-1]))
-    with open(path, 'r', encoding=encoding) as f:
-        return BeautifulSoup(f, HTML_PARSER)
-
-
-def find_document_title(doc):
-    title_tag = doc.find('meta', attrs={'name': 'title'})
-    if title_tag is None:
-        raise ExtractMetadataError('Unable to extract title from SMIL document')
-    title = title_tag.attrs.get('content')
-    if not title:
-        raise ExtractMetadataError('SMIL document has no title')
-    return title
-
-
-def get_audio_filenames_from_smil(smil):
-    audio_files = [audio.attrs.get('src') for audio in smil.find_all('audio')]
-    unique_audio_files = []
-    for file in audio_files:
-        if file not in unique_audio_files:
-            unique_audio_files.append(file)
-    return tuple(unique_audio_files)
-
-
-def add_path_prefix(path):
-    return '\\\\?\\{0}'.format(path)
+        if level == 1:
+            if (
+                sib := heading.find_next_sibling(["h1", "h2", "h3"])
+            ) and sib.name != "h1":
+                current_h1 = Smil(level, title, path, [])
+                smil_list.append(current_h1)
+            current_h2 = None
+        elif level == 2:
+            current_h2 = Smil(level, title, path, [])
+            if current_h1:
+                current_h1.children.append(current_h2)
+        elif level == 3:
+            smil = Smil(level, title, path, [])
+            if current_h2:
+                current_h2.children.append(smil)
+    return smil_list
 
 
 def make_safe_filename(filename):
     # strip out any disallowed chars and replace with underscores
     disallowed_ascii = [chr(i) for i in range(0, 32)]
-    disallowed_chars = '<>:"/\\|?*^{0}'.format(''.join(disallowed_ascii))
-    translator = dict((ord(char), '_') for char in disallowed_chars)
-    safe_filename = filename.replace(': ', ' - ').translate(translator).rstrip('. ')
+    disallowed_chars = '<>:"/\\|?*^{}'.format("".join(disallowed_ascii))
+    translator = dict((ord(char), "_") for char in disallowed_chars)
+    safe_filename = filename.replace(": ", " - ").translate(translator).rstrip(". ")
     return safe_filename
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

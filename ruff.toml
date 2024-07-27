@@ -1,0 +1,22 @@
+preview = true
+select = [
+	"A",  # flake8-builtins
+	"ARG",  # flake8-unused-arguments 
+	"B",  # flake8-bugbear
+	"C90", # mccabe
+	"E",  # pycodestyle Error
+	"F",  # Pyflakes
+	"FIX",  # flake8-fixme
+	"I",  # isort
+	"UP",  # pyupgrade
+	"W",  # pycodestyle Warning
+]
+show-source = true
+target-version = "py311"
+
+[mccabe]
+max-complexity = 15
+
+[format]
+line-ending = "auto"
+quote-style = "double"
