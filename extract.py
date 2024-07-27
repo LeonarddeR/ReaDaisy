@@ -5,16 +5,17 @@
 # See the file LICENSE for more details.
 
 import argparse
-import csv
 import os
 import shutil
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
+from functools import cached_property
 from glob import glob
 from typing import Self
 
 from bs4 import BeautifulSoup
+from reathon.nodes import Item, Project, Source, Track
 
 NCC_FILENAME = "NCC.HTML"
 
@@ -26,17 +27,30 @@ class Smil:
     level: int
     title: str
     file_name: str
-    children: list[Self] | None = None
+    children: list[Self] = field(default_factory=list)
+
+
+@dataclass
+class Segment:
+    identifier: str
+    start: Decimal
+    end: Decimal
+
+    @cached_property
+    def length(self) -> Decimal:
+        return self.end - self.start
 
 
 @dataclass
 class Audio:
-    """Represents an audio file with a start and end time."""
-
-    identifier: str
     file_name: str
     start: Decimal
-    end: Decimal
+    length: Decimal
+    segments: list[Segment] = field(default_factory=list)
+
+    @cached_property
+    def end(self) -> Decimal:
+        return self.start + self.length
 
 
 def main():
@@ -54,12 +68,26 @@ def main():
     for ncc_file in ncc_files:
         ncc_dir = os.path.dirname(ncc_file)
         smils = get_smils(ncc_file)
-        process_books(smils, ncc_dir, output_directory, book_start_number)
+        for index, book in enumerate(smils, start=book_start_number):
+            book_name = f"{index:02d} - {book.title}"
+            book_dir = os.path.join(output_directory, book_name)
+            os.makedirs(book_dir, exist_ok=True)
+
+            audio_list = process_book(book, ncc_dir, book_dir)
+
+            create_reaper_project(
+                audio_list,
+                os.path.join(book_dir, f"{book.title}.RPP"),
+                book.title,
+            )
         book_start_number += len(smils)
 
 
 def copy_audio_file(
-    input_directory: str, book_dir: str, current_file_name: str, new_filename: str
+    input_directory: str,
+    book_dir: str,
+    current_file_name: str,
+    new_filename: str,
 ):
     """Copy audio file from input directory to book directory."""
     source_path = os.path.join(input_directory, current_file_name)
@@ -67,61 +95,79 @@ def copy_audio_file(
     shutil.copy2(source_path, destination_path)
 
 
-def process_books(
-    smils: list[Smil],
+def create_reaper_project(
+    audio_list: list[Audio],
+    output_path: str,
+    title: str,
+) -> None:
+    """
+    Creates a Reaper project file from a list of audio files.
+    """
+    project = Project(timemode=3, timelockmode=1)
+    track = Track(name=f'"{title}"')
+    project.add(track)
+    marker_index = 1
+    for audio in audio_list:
+        source = Source(file=audio.file_name)
+        item = Item(
+            source,
+            name=f'"{os.path.splitext(audio.file_name)[0]}"',
+            position=audio.start,
+            length=audio.length,
+        )
+        track.add(item)
+        for segment in audio.segments:
+            project.add_marker(marker_index, float(segment.start), segment.identifier)
+            marker_index += 1
+
+    project.write(output_path)
+
+
+def process_book(
+    book: Smil,
     input_directory: str,
     output_directory: str,
-    book_start_number: int,
-):
-    """Process each book in the DAISY structure."""
-    for index, book in enumerate(smils, start=book_start_number):
-        book_dir = os.path.join(output_directory, f"{index:02d} - {book.title}")
-        os.makedirs(book_dir, exist_ok=True)
+) -> list[Audio]:
+    """
+    Process a book by extracting audio metadata from its SMIL content,
+    copying the audio files to an output directory,
+    and creating a Reaper project file for the book.
+    """
+    smil_path = os.path.join(input_directory, book.file_name)
+    smil_content = parse_smil_document(smil_path)
+    total_chapters = len(book.children)
+    chapter_padding = len(str(total_chapters))
+    book_prefix = f"{str(0).zfill(chapter_padding)} - {book.title}"
+    audio = get_audio(smil_content, 0, book_prefix)
+    audio_files = [
+        audio,
+    ]
+    book_start = get_start_time(smil_content)
 
-        smil_path = os.path.join(input_directory, book.file_name)
-        smil_content = parse_smil_document(smil_path)
-        audio_files = get_audio_files(smil_content)
-        book_start = get_start_time(smil_content)
-        audio_file_name = audio_files[0].file_name
+    new_file_name = make_safe_filename(
+        f"{book_prefix}{os.path.splitext(audio.file_name)[1]}"
+    )
+    copy_audio_file(input_directory, output_directory, audio.file_name, new_file_name)
+    audio.file_name = new_file_name
 
-        new_file_name = make_safe_filename(
-            f"00 - {book.title}{os.path.splitext(audio_file_name)[1]}"
+    for i, chapter in enumerate(book.children, start=1):
+        audio_files.extend(
+            process_chapter(
+                chapter,
+                i,
+                input_directory,
+                output_directory,
+                book_start,
+                chapter_padding,
+            )
         )
-        copy_audio_file(input_directory, book_dir, audio_file_name, new_file_name)
 
-        total_chapters = len(book.children)
-        chapter_padding = len(str(total_chapters))
-
-        for chapter in book.children:
-            audio_files += process_chapter(
-                chapter, input_directory, book_dir, book_start, chapter_padding
-            )
-
-        create_markers_csv(book_dir, index, book.title, audio_files)
-
-
-def create_markers_csv(book_dir: str, index: int, title: str, audio_files: list[Audio]):
-    """Create a CSV file with markers for REAPER."""
-    csv_filename = os.path.join(book_dir, f"{index:02d} - {title}_markers.csv")
-    with open(csv_filename, "w", newline="") as csvfile:
-        csv_writer = csv.writer(csvfile)
-        csv_writer.writerow(["#", "Name", "Start", "End", "Length"])
-        for i, audio in enumerate(audio_files, start=1):
-            start, end = audio.start, audio.end
-            csv_writer.writerow(
-                [
-                    f"r{i}",
-                    f"{i}{audio.identifier}",
-                    start,
-                    end,
-                    end - start,
-                    "",
-                ]
-            )
+    return audio_files
 
 
 def process_chapter(
     chapter: Smil,
+    index: int,
     input_directory: str,
     book_dir: str,
     book_start: Decimal,
@@ -131,29 +177,32 @@ def process_chapter(
     smil_path = os.path.join(input_directory, chapter.file_name)
     smil_content = parse_smil_document(smil_path)
     rel_start = get_start_time(smil_content) - book_start
-    chapter_audio_files = get_audio_files(smil_content, rel_start, f"{chapter}_")
-
     total_subheadings = len(chapter.children)
     subheading_padding = len(str(total_subheadings))
+    chapter_prefix = (chapter.title if chapter.title.isdigit() else str(index)).zfill(
+        chapter_padding
+    )
+    audio = get_audio(smil_content, rel_start, chapter_prefix)
+    chapter_audio_files = [
+        audio,
+    ]
 
     new_file_name = make_safe_filename(
-        f"{chapter.title.zfill(chapter_padding)} - "
-        f"{str(0).zfill(subheading_padding)}{os.path.splitext(chapter_audio_files[0].file_name)[1]}"
+        f"{chapter_prefix} - {str(0).zfill(subheading_padding)}"
+        f"{os.path.splitext(audio.file_name)[1]}"
     )
-    copy_audio_file(
-        input_directory, book_dir, chapter_audio_files[0].file_name, new_file_name
-    )
-
+    copy_audio_file(input_directory, book_dir, audio.file_name, new_file_name)
+    audio.file_name = new_file_name
     for subheading_index, subheading in enumerate(chapter.children, start=1):
-        chapter_audio_files += process_subheading(
-            subheading,
-            input_directory,
-            book_dir,
-            book_start,
-            chapter,
-            subheading_index,
-            chapter_padding,
-            subheading_padding,
+        chapter_audio_files.append(
+            process_subheading(
+                subheading,
+                input_directory,
+                book_dir,
+                book_start,
+                str(subheading_index).zfill(subheading_padding),
+                chapter_prefix,
+            )
         )
 
     return chapter_audio_files
@@ -164,32 +213,26 @@ def process_subheading(
     input_directory: str,
     book_dir: str,
     book_start: Decimal,
-    chapter: Smil,
-    subheading_index: int,
-    chapter_padding: int,
-    subheading_padding: int,
-) -> list[Audio]:
+    subheading_index: str,
+    chapter_prefix: str,
+) -> Audio:
     """Process a subheading within a chapter."""
     smil_path = os.path.join(input_directory, subheading.file_name)
     smil_content = parse_smil_document(smil_path)
     rel_start = get_start_time(smil_content) - book_start
-    subheading_audio_files = get_audio_files(
-        smil_content, rel_start, f"{chapter}_{subheading_index}"
-    )
-
+    subheading_prefix = f"{chapter_prefix} - {subheading_index} - {subheading.title}"
+    audio = get_audio(smil_content, rel_start, subheading_prefix)
     subheading_new_file_name = make_safe_filename(
-        f"{chapter.title.zfill(chapter_padding)} - "
-        f"{str(subheading_index).zfill(subheading_padding)} - "
-        f"{subheading.title}{os.path.splitext(subheading_audio_files[0].file_name)[1]}"
+        f"{subheading_prefix}{os.path.splitext(audio.file_name)[1]}"
     )
     copy_audio_file(
         input_directory,
         book_dir,
-        subheading_audio_files[0].file_name,
+        audio.file_name,
         subheading_new_file_name,
     )
-
-    return subheading_audio_files
+    audio.file_name = subheading_new_file_name
+    return audio
 
 
 def parse_smil_document(smil_path: str) -> BeautifulSoup:
@@ -209,21 +252,23 @@ def get_start_time(smil_content: BeautifulSoup) -> Decimal:
     return sum(Decimal(part) * (60**i) for i, part in enumerate(reversed(parts)))
 
 
-def get_audio_files(
-    smil_content: BeautifulSoup, start_time: Decimal = 0, id_prefix: str = ""
-) -> list[Audio]:
-    """Extract audio file information from a SMIL document."""
-    audio_files = []
-    for audio_tag in smil_content.find_all("audio"):
-        file_name = audio_tag["src"]
-        start = Decimal(audio_tag["clip-begin"].split("=")[1][:-1]) + start_time
-        end = Decimal(audio_tag["clip-end"].split("=")[1][:-1]) + start_time
-        identifier = f"{id_prefix}{int(audio_tag["id"].split("_")[-1], base=16)}"
-        audio_files.append(Audio(identifier, file_name, start, end))
+def get_audio(
+    smil_content: BeautifulSoup,
+    start_time: Decimal = Decimal(0),
+    id_prefix: str = "",
+) -> Audio:
+    seq_tag = smil_content.find("seq", dur=True)
+    duration = Decimal(seq_tag["dur"][:-1])  # Remove 's' and convert to Decimal
+    audio_tags = seq_tag.find_all("audio")
+    file_name = audio_tags[0]["src"]
+    audio = Audio(file_name, start_time, duration)
 
-    if not all(audio.file_name == file_name for audio in audio_files):
-        raise ValueError(f"Not all audio files have the same filename: {file_name}")
-    return audio_files
+    for audio_tag in audio_tags:
+        identifier = f"{id_prefix} - {int(audio_tag["id"].split("_")[-1], base=16)}"
+        seg_start = Decimal(audio_tag["clip-begin"].split("=")[1][:-1]) + start_time
+        seg_end = Decimal(audio_tag["clip-end"].split("=")[1][:-1]) + start_time
+        audio.segments.append(Segment(identifier, seg_start, seg_end))
+    return audio
 
 
 def parse_command_line() -> argparse.Namespace:
