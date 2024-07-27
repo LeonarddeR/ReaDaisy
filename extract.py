@@ -1,5 +1,5 @@
 # daisy-extract
-# Copyright (C) 2016 James Scholes
+# Copyright (C) 2016-2014 James Scholes, Leonard de Ruijter
 # This program is free software, licensed under the terms of the
 # GNU General Public License (version 3 or later).
 # See the file LICENSE for more details.
@@ -97,70 +97,103 @@ def process_books(
         chapter_padding = len(str(total_chapters))
 
         for chapter in book.children:
-            smil_path = os.path.join(input_directory, chapter.file_name)
-            smil_content = parse_smil_document(smil_path)
-            rel_start = get_start_time(smil_content) - book_start
-            chapter_audio_files = get_audio_files(
-                smil_content, rel_start, f"{chapter}_"
+            audio_files += process_chapter(
+                chapter, input_directory, book_dir, book_start, chapter_padding
             )
 
-            total_subheadings = len(chapter.children)
-            subheading_padding = len(str(total_subheadings))
-
-            new_file_name = (
-                f"{chapter.title.zfill(chapter_padding)} - "
-                f"{str(0).zfill(subheading_padding)}{os.path.splitext(chapter_audio_files[0].file_name)[1]}"
-            )
-            new_file_name = make_safe_filename(new_file_name)
-            copy_audio_file(
-                input_directory,
-                book_dir,
-                chapter_audio_files[0].file_name,
-                new_file_name,
-            )
-
-            audio_files += chapter_audio_files
-            for subheading_index, subheading in enumerate(chapter.children, start=1):
-                smil_path = os.path.join(input_directory, subheading.file_name)
-                smil_content = parse_smil_document(smil_path)
-                rel_start = get_start_time(smil_content) - book_start
-                subheading_audio_files = get_audio_files(
-                    smil_content, rel_start, f"{chapter}_{subheading_index}"
-                )
-
-                subheading_new_file_name = (
-                    f"{chapter.title.zfill(chapter_padding)} - "
-                    f"{str(subheading_index).zfill(subheading_padding)} - "
-                    f"{subheading.title}{os.path.splitext(subheading_audio_files[0].file_name)[1]}"
-                )
-                subheading_new_file_name = make_safe_filename(subheading_new_file_name)
-                copy_audio_file(
-                    input_directory,
-                    book_dir,
-                    subheading_audio_files[0].file_name,
-                    subheading_new_file_name,
-                )
-
-                audio_files += subheading_audio_files
         # Write audio_files to a CSV file for REAPER markers
         csv_filename = os.path.join(book_dir, f"{index:02d} - {book.title}_markers.csv")
-        with open(csv_filename, "w", newline="") as csvfile:
-            csv_writer = csv.writer(csvfile)
-            csv_writer.writerow(["#", "Name", "Start", "End", "Length"])
-            for i, audio in enumerate(audio_files, start=1):
-                start = audio.start
-                end = audio.end
-                length = end - start
-                csv_writer.writerow(
-                    [
-                        f"r{i}",
-                        f"{i}{audio.identifier}",
-                        start,
-                        end,
-                        length,
-                        "",
-                    ]
-                )
+
+        create_markers_csv(csv_filename, audio_files)
+
+
+def create_markers_csv(csv_filename: str, audio_files: list):
+    with open(csv_filename, "w", newline="") as csvfile:
+        csv_writer = csv.writer(csvfile)
+        csv_writer.writerow(["#", "Name", "Start", "End", "Length"])
+        for i, audio in enumerate(audio_files, start=1):
+            start = audio.start
+            end = audio.end
+            length = end - start
+            csv_writer.writerow(
+                [
+                    f"r{i}",
+                    f"{i}{audio.identifier}",
+                    start,
+                    end,
+                    length,
+                    "",
+                ]
+            )
+
+
+def process_chapter(chapter, input_directory, book_dir, book_start, chapter_padding):
+    smil_path = os.path.join(input_directory, chapter.file_name)
+    smil_content = parse_smil_document(smil_path)
+    rel_start = get_start_time(smil_content) - book_start
+    chapter_audio_files = get_audio_files(smil_content, rel_start, f"{chapter}_")
+
+    total_subheadings = len(chapter.children)
+    subheading_padding = len(str(total_subheadings))
+
+    new_file_name = (
+        f"{chapter.title.zfill(chapter_padding)} - "
+        f"{str(0).zfill(subheading_padding)}{os.path.splitext(chapter_audio_files[0].file_name)[1]}"
+    )
+    new_file_name = make_safe_filename(new_file_name)
+    copy_audio_file(
+        input_directory,
+        book_dir,
+        chapter_audio_files[0].file_name,
+        new_file_name,
+    )
+
+    for subheading_index, subheading in enumerate(chapter.children, start=1):
+        chapter_audio_files += process_subheading(
+            subheading,
+            input_directory,
+            book_dir,
+            book_start,
+            chapter,
+            subheading_index,
+            chapter_padding,
+            subheading_padding,
+        )
+
+    return chapter_audio_files
+
+
+def process_subheading(
+    subheading,
+    input_directory,
+    book_dir,
+    book_start,
+    chapter,
+    subheading_index,
+    chapter_padding,
+    subheading_padding,
+):
+    smil_path = os.path.join(input_directory, subheading.file_name)
+    smil_content = parse_smil_document(smil_path)
+    rel_start = get_start_time(smil_content) - book_start
+    subheading_audio_files = get_audio_files(
+        smil_content, rel_start, f"{chapter}_{subheading_index}"
+    )
+
+    subheading_new_file_name = (
+        f"{chapter.title.zfill(chapter_padding)} - "
+        f"{str(subheading_index).zfill(subheading_padding)} - "
+        f"{subheading.title}{os.path.splitext(subheading_audio_files[0].file_name)[1]}"
+    )
+    subheading_new_file_name = make_safe_filename(subheading_new_file_name)
+    copy_audio_file(
+        input_directory,
+        book_dir,
+        subheading_audio_files[0].file_name,
+        subheading_new_file_name,
+    )
+
+    return subheading_audio_files
 
 
 def parse_smil_document(smil_path):
