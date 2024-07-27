@@ -1,4 +1,4 @@
-beautifulsoup4
-lxml
-ruff
-reathon
+beautifulsoup4~=4.12.3
+lxml~=5.2.2
+reathon~=0.0.6
+ruff~=0.5.5
