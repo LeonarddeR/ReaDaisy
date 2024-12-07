@@ -264,7 +264,8 @@ def get_audio(
     audio = Audio(file_name, start_time, duration)
 
     for audio_tag in audio_tags:
-        identifier = f"{id_prefix} - {int(audio_tag["id"].split("_")[-1], base=16)}"
+        x = int(audio_tag["id"].split("_")[-1], base=16)
+        identifier = f"{id_prefix} - {x}"
         seg_start = Decimal(audio_tag["clip-begin"].split("=")[1][:-1]) + start_time
         seg_end = Decimal(audio_tag["clip-end"].split("=")[1][:-1]) + start_time
         audio.segments.append(Segment(identifier, seg_start, seg_end))
